@@ -2,6 +2,14 @@
   "projects": {
     "staging": "annakut-app-halifax"
   },
-  "targets": {},
+  "targets": {
+    "annakut-app-halifax": {
+      "hosting": {
+        "newtarget": [
+          "halifax-diwali"
+        ]
+      }
+    }
+  },
   "etags": {}
 }

@@ -24,7 +24,7 @@ const Nav = () => {
         <Link className="link" to="/admin">Admin</Link>
         <Link className="link" to="/dashboard">Dashboard</Link>
       </div> */}
-      {/* <div>
+        {/* <div>
         {user ? (<>
           <span style={{marginRight:8}}>{user.email} {role ? `(${role})` : ''}</span>
           <button className="btn secondary" onClick={logout}>Logout</button>
@@ -44,7 +44,7 @@ export default function App(){
         <Route path="/dashboard" element={<Guard requireAdmin={true}><Dashboard /></Guard>} />
         <Route path="/login" element={<Login />} />
       </Routes>
-      <div className="container footer">© {new Date().getFullYear()} Annakut Vaangi Seva</div>
+      <div className="container footer">© {new Date().getFullYear()} Annakut Vaangi Seva App - Developed by Pramukham Technologies</div>
     </AuthProvider>
   )
 }
