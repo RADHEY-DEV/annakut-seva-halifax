@@ -1,0 +1,31 @@
+// NOTE: Adjust these rules to your needs before going to production.
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Public can read categories and taken status
+    match /categories/{catId} {
+      allow read: if true;
+      match /items/{itemId} {
+        allow read: if true;
+      }
+    }
+    match /taken/{itemId} {
+      allow read: if true;
+      // Only allow create if not existing (enforced by client transaction, but secure here too)
+      allow create: if !exists(/databases/$(database)/documents/taken/$(itemId));
+      // Disallow direct delete/update by public
+      allow delete, update: if false;
+    }
+    // Pledges can be created by anyone
+    match /pledges/{docId} {
+      allow create: if true;
+      allow read: if request.auth != null && exists(/databases/$(database)/documents/roles/$(request.auth.uid)) && get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role == 'admin';
+      allow list: if request.auth != null && exists(/databases/$(database)/documents/roles/$(request.auth.uid)) && get(/databases/$(database)/documents/roles/$(request.auth.uid)).data.role == 'admin';
+    }
+    // Roles readable by the user and admins; write only by admin (set from console)
+    match /roles/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if false; // write via console only
+    }
+  }
+}
