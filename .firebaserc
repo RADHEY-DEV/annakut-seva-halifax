@@ -1,12 +1,12 @@
 {
   "projects": {
-    "staging": "annakut-app-halifax"
+    "staging": "annakut-app-Montreal"
   },
   "targets": {
-    "annakut-app-halifax": {
+    "annakut-app-Montreal": {
       "hosting": {
         "newtarget": [
-          "halifax-diwali"
+          "Montreal-diwali"
         ]
       }
     }

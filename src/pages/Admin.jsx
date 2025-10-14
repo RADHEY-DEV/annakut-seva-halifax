@@ -1,20 +1,23 @@
 import React, { useEffect, useState } from 'react'
 import { addDoc, collection, getDocs, doc, writeBatch } from 'firebase/firestore'
 import { db } from '../firebase'
-import * as XLSX from 'xlsx'        // for CSV and non-styled imports
-import ExcelJS from 'exceljs'       // for reading bold in .xlsx
+import * as XLSX from 'xlsx' // reads .xlsx/.csv (values only)
 
 /**
- * Bulk import formats supported:
- * 1) .XLSX (preferred): Column A only. Make category rows BOLD; put items under each category (not bold).
- * 2) CSV / Paste: One value per line in a single column. Use either:
- *    - "# Category"  (hash) OR
- *    - "**Category**" (Markdown-style bold)
- *    Lines after a category (until next category) are items.
+ * Supported import formats:
  *
- * Replace mode (optional):
- * - Wipes all categories + items (and optionally all "taken") before importing.
- * - Pledges are NOT changed.
+ * A) EXCEL with first row as CATEGORY HEADERS (what you need):
+ *    Row 1:  | Sweets | Savory | Fruits | ...
+ *    Row 2+: | Ladoo  | Khakhra| Apple  | ...
+ *             Barfi   | Chevdo | Banana | ...
+ *    -> Each column under a header is an item of that category.
+ *
+ * B) CSV / Paste fallback (no styles):
+ *    "# Category" or "**Category**" marker lines, followed by item lines.
+ *
+ * Replace mode:
+ *    - "Replace all" deletes all categories & their items (and optionally all "taken") before import.
+ *    - Pledges are NOT modified.
  */
 
 export default function Admin(){
@@ -33,6 +36,7 @@ export default function Admin(){
   const [replaceAll, setReplaceAll] = useState(true)
   const [clearTaken, setClearTaken] = useState(true)
 
+  // ----- Load existing (for display) -----
   const load = async () => {
     const catsSnap = await getDocs(collection(db, 'categories'))
     const out = []
@@ -45,7 +49,7 @@ export default function Admin(){
   }
   useEffect(() => { load() }, [])
 
-  // Quick single-category add (kept)
+  // Quick single-category add
   const addCategory = async (e) => {
     e.preventDefault()
     setMsg('')
@@ -60,9 +64,9 @@ export default function Admin(){
     setMsg('Category added.')
   }
 
-  // ---------- Parsing helpers ----------
+  // ---------- Parser helpers ----------
 
-  // Parse #/Markdown-bold markers in plain text lines
+  // Fallback parser for "# Category" or "**Category**" pasted lines
   const parseLinesToMap = (lines) => {
     const map = new Map() // category -> Set(items)
     let currentCat = null
@@ -85,7 +89,34 @@ export default function Admin(){
     return map
   }
 
-  // Build preview structure
+  // NEW: Parse "headers across columns" format from a 2D array of rows (SheetJS header:1)
+  const parseHeaderColumnsToMap = (rows) => {
+    const map = new Map()
+    if (!rows || rows.length === 0) return map
+
+    const headerRow = rows[0] || []
+    const headerNames = headerRow.map(h => String(h ?? '').trim())
+
+    // Count how many non-empty headers exist
+    const nonEmptyHeaders = headerNames
+      .map((h, idx) => ({ h, idx }))
+      .filter(x => x.h.length > 0)
+
+    if (nonEmptyHeaders.length === 0) return map
+
+    // Build sets for each header
+    for (const { h, idx } of nonEmptyHeaders) {
+      if (!map.has(h)) map.set(h, new Set())
+      // Walk down the rows in that column to collect items
+      for (let r = 1; r < rows.length; r++) {
+        const cell = rows[r]?.[idx]
+        const val = String(cell ?? '').trim()
+        if (val) map.get(h).add(val)
+      }
+    }
+    return map
+  }
+
   const buildPreview = (map) => {
     let catCount = 0, itemCount = 0
     const preview = []
@@ -95,67 +126,51 @@ export default function Admin(){
       catCount++
       itemCount += items.length
     }
+    // Sort categories/items for stable preview
+    preview.sort((a,b) => a.name.localeCompare(b.name))
+    preview.forEach(p => p.items.sort((a,b)=>a.localeCompare(b)))
     setImportPreview({ preview, catCount, itemCount, map })
     setImportStatus('')
   }
 
   // ---------- File handlers ----------
 
-  // XLSX with real bold detection
-  const handleXlsxBold = async (file) => {
-    const ab = await file.arrayBuffer()
-    const wb = new ExcelJS.Workbook()
-    await wb.xlsx.load(ab)
-    const ws = wb.worksheets[0]
-    const map = new Map()
-    let currentCat = null
-
-    // read only column A
-    for (let r = 1; r <= ws.rowCount; r++) {
-      const cell = ws.getRow(r).getCell(1)
-      let txt = cell.value
-      if (txt && typeof txt === 'object' && 'richText' in txt) {
-        txt = txt.richText.map(rt => rt.text).join('')
-      }
-      txt = String(txt || '').trim()
-      if (!txt) continue
-
-      const bold = cell.font?.bold === true
-
-      if (bold) {
-        currentCat = txt
-        if (!map.has(currentCat)) map.set(currentCat, new Set())
-      } else if (currentCat) {
-        map.get(currentCat).add(txt)
-      }
-    }
-    return map
-  }
-
-  // CSV / other (no styles) → fall back to markers
-  const handleCsvOrOther = async (file) => {
-    const data = await file.arrayBuffer()
-    const wb = XLSX.read(data, { type: 'array' })
-    const ws = wb.Sheets[wb.SheetNames[0]]
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1 })
-    const values = rows
-      .map(r => (r || []).find(c => c !== null && c !== undefined && String(c).trim() !== ''))
-      .filter(Boolean)
-    return parseLinesToMap(values.map(v => String(v)))
-  }
-
-  // Entrypoint for file upload
+  // Try to detect & parse the "headers across columns" first; otherwise fallback to marker format
   const handleFile = async (file) => {
     setFileName(file?.name || '')
     if (!file) return
-    let map
-    const ext = (file.name.split('.').pop() || '').toLowerCase()
-    if (ext === 'xlsx') {
-      map = await handleXlsxBold(file)
-    } else {
-      map = await handleCsvOrOther(file) // supports "#"/"**" markers
+    try {
+      const data = await file.arrayBuffer()
+      const wb = XLSX.read(data, { type: 'array' })
+      const ws = wb.Sheets[wb.SheetNames[0]]
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false }) // 2D array
+
+      // Heuristic: if first row has 2+ non-empty cells OR (>=1 header and >=2 columns), treat as header-columns format
+      const headerRow = rows[0] || []
+      const nonEmptyHeaderCount = headerRow.filter(c => String(c ?? '').trim() !== '').length
+      const isHeaderColumns =
+        (nonEmptyHeaderCount >= 2) || (nonEmptyHeaderCount >= 1 && headerRow.length >= 2)
+
+      const map = isHeaderColumns
+        ? parseHeaderColumnsToMap(rows)
+        : parseLinesToMap(
+            rows
+              .map(r => (r || [])[0]) // first column as a line
+              .filter(v => v !== undefined && v !== null)
+              .map(v => String(v))
+          )
+
+      if (map.size === 0) {
+        setImportPreview(null)
+        setImportStatus('No categories/items detected. Make sure row 1 has category names across columns, with items below.')
+        return
+      }
+      buildPreview(map)
+    } catch (err) {
+      console.error('Import error:', err)
+      setImportPreview(null)
+      setImportStatus('Failed to read file. Ensure it is a valid .xlsx/.csv and try again.')
     }
-    buildPreview(map)
   }
 
   // Paste text → supports "# Category" and "**Category**"
@@ -192,7 +207,7 @@ export default function Admin(){
       : 'Preparing import (merge)...'
     )
     try {
-      // Replace-all: wipe categories, their items, and optionally all taken
+      // Replace-all: wipe categories & items (and optionally taken)
       if (replaceAll) {
         const toDelete = []
         const catsSnap = await getDocs(collection(db, 'categories'))
@@ -208,9 +223,10 @@ export default function Admin(){
         await commitDeletes(toDelete)
       }
 
-      // Build writes from preview (no merge in replaceAll; otherwise append-only)
+      // Build writes from preview
       setImportStatus(prev => prev + '\nImporting new categories/items...')
       const writes = []
+
       if (replaceAll) {
         for (const [catName, itemSet] of importPreview.map.entries()) {
           const catRef = doc(collection(db, 'categories'))
@@ -223,7 +239,7 @@ export default function Admin(){
           }
         }
       } else {
-        // Merge mode: append new categories/items without deleting; de-dupe existing
+        // Merge mode: de-dup and append
         const existingCatsSnap = await getDocs(collection(db, 'categories'))
         const existingByLower = new Map()
         for (const d of existingCatsSnap.docs) {
@@ -271,7 +287,7 @@ export default function Admin(){
     <div className="container">
       <div className="card">
         <h1>Admin</h1>
-        <p>Add categories and items (comma separated) OR use the bulk import below.</p>
+        <p>Add a single category, or use Bulk Import below.</p>
         {msg && <div className="warn">{msg}</div>}
         <div className="spacer"></div>
 
@@ -292,8 +308,10 @@ export default function Admin(){
       <div className="card">
         <h2>Bulk Import</h2>
         <p>
-          <strong>.XLSX (bold = category)</strong>: Put everything in column A. Make category rows <em>bold</em>, items normal.<br/>
-          <strong>CSV / Paste</strong>: Use <code># Category</code> or <code>**Category**</code> markers.
+          <strong>Excel (first row = categories, columns = items)</strong><br/>
+          Put category names in <em>row 1</em> across columns, and list items <em>below each category</em> in the same column.<br/>
+          Example: Row 1: <code>Sweets | Savory | Fruits</code>; Row 2+: items under each column.<br/>
+          <strong>CSV / Paste</strong>: Use <code># Category</code> or <code>**Category**</code>.
         </p>
 
         <div className="warn" style={{margin:'12px 0'}}>
@@ -327,7 +345,7 @@ export default function Admin(){
           rows={8}
           value={importText}
           onChange={e=>setImportText(e.target.value)}
-          placeholder={`**Sweets**
+          placeholder={`# Sweets
 Ladoo
 Barfi
 # Savory

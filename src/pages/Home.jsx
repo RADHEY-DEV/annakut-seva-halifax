@@ -221,7 +221,7 @@ export default function Home(){
   return (
     <div className="container">
       <div className="card">
-        <h1 className="header-title">Annakut Vaangi Seva - Halifax</h1>
+        <h1 className="header-title">Annakut Vaangi Seva - Montreal</h1>
         <p>
 
         Jai Swāminārāyan! Happy Diwali & New Year. Welcome to Annakut Vaangi Seva App. After you submit, a confirmation pop-up will appear and
